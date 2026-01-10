@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+ï»¿<!DOCTYPE html>
 <html lang="en" class="transition-colors duration-300">
 <head>
     <meta charset="UTF-8">
@@ -4137,39 +4137,47 @@
 
         // --- 2. LOGS (SHIFTS, CITATIONS, ARRESTS, WARRANTS) ---
         async function loadAdminLogs() {
-    const loadingRow = '<tr><td colspan="100%" class="text-center py-4 text-slate-400"><i class="ph-duotone ph-spinner animate-spin"></i></td></tr>';
-    
-    // Set loading
-    ['adminShiftsBody', 'adminCitationsBody', 'adminArrestsBody', 'adminWarrantsBody'].forEach(id => {
-        const el = document.getElementById(id);
-        if(el) el.innerHTML = loadingRow;
-    });
+        const loadingRow = '<tr><td colspan="100%" class="text-center py-4 text-slate-400"><i class="ph-duotone ph-spinner animate-spin"></i></td></tr>';
+        
+        // Set loading indicators
+        ['adminShiftsBody', 'adminCitationsBody', 'adminArrestsBody', 'adminWarrantsBody'].forEach(id => {
+            const el = document.getElementById(id);
+            if(el) el.innerHTML = loadingRow;
+        });
 
-    const [shiftsRes, citationsRes, arrestsRes, warrantsRes] = await Promise.allSettled([
-        // UPDATED: Use new pagination endpoint with limit 100
-        apiRequest('/v1/shifts?limit=100'), 
-        apiRequest('/citations'),
-        apiRequest('/arrests'),
-        apiRequest('/warrant-logs')
-    ]);
+        // Fetch all data in parallel
+        const [shiftsRes, citationsRes, arrestsRes, warrantsRes] = await Promise.allSettled([
+            apiRequest('/v1/shifts?limit=100'), 
+            apiRequest('/citations'),
+            apiRequest('/arrests'),
+            apiRequest('/warrant-logs')
+        ]);
 
-    // Handle Shifts Response structure (likely { data: [], nextCursor: ... })
-    let shiftData = [];
-    if (shiftsRes.status === 'fulfilled' && shiftsRes.value) {
-        // Check if response is array or object with data property
-        shiftData = Array.isArray(shiftsRes.value) ? shiftsRes.value : (shiftsRes.value.data || []);
+        // 1. Handle Shifts (Fix for D1 structure: { shifts: [...] } or { data: [...] })
+        let shiftData = [];
+        if (shiftsRes.status === 'fulfilled' && shiftsRes.value) {
+            const raw = shiftsRes.value;
+            if (Array.isArray(raw)) {
+                shiftData = raw;
+            } else if (raw.shifts && Array.isArray(raw.shifts)) {
+                shiftData = raw.shifts;
+            } else if (raw.data && Array.isArray(raw.data)) {
+                shiftData = raw.data;
+            }
+        }
+
+        // 2. Handle Citations & Arrests (Ensure Arrays)
+        adminData.shifts = shiftData;
+        adminData.citations = (citationsRes.status === 'fulfilled' && Array.isArray(citationsRes.value)) ? citationsRes.value : [];
+        adminData.arrests = (arrestsRes.status === 'fulfilled' && Array.isArray(arrestsRes.value)) ? arrestsRes.value : [];
+        adminData.warrants = (warrantsRes.status === 'fulfilled' && Array.isArray(warrantsRes.value)) ? warrantsRes.value : [];
+
+        // Render Tables
+        renderShiftsTable(adminData.shifts);
+        renderCitationsTable(adminData.citations);
+        renderArrestsTable(adminData.arrests);
+        renderWarrantsTable(adminData.warrants);
     }
-
-    adminData.shifts = shiftData;
-    adminData.citations = (citationsRes.status === 'fulfilled' && Array.isArray(citationsRes.value)) ? citationsRes.value : [];
-    adminData.arrests = (arrestsRes.status === 'fulfilled' && Array.isArray(arrestsRes.value)) ? arrestsRes.value : [];
-    adminData.warrants = (warrantsRes.status === 'fulfilled' && Array.isArray(warrantsRes.value)) ? warrantsRes.value : [];
-
-    renderShiftsTable(adminData.shifts);
-    renderCitationsTable(adminData.citations);
-    renderArrestsTable(adminData.arrests);
-    renderWarrantsTable(adminData.warrants);
-}
         // --- BULK DELETE HELPERS ---
         function toggleSelectAll(source, bodyId) {
             const checkboxes = document.querySelectorAll(`#${bodyId} input.row-checkbox`);
@@ -4217,65 +4225,80 @@
         }
 
         function renderShiftsTable(data) {
-    const tbody = document.getElementById('adminShiftsBody');
-    document.getElementById('count-shifts').innerText = data.length;
-    tbody.innerHTML = '';
-    
-    if (data.length === 0) { 
-        tbody.innerHTML = '<tr><td colspan="100%" class="text-center py-4 text-slate-400 text-sm">No logs found.</td></tr>'; 
-        return; 
-    }
+            const tbody = document.getElementById('adminShiftsBody');
+            document.getElementById('count-shifts').innerText = data.length;
+            tbody.innerHTML = '';
+            
+            if (data.length === 0) { 
+                tbody.innerHTML = '<tr><td colspan="100%" class="text-center py-4 text-slate-400 text-sm">No logs found.</td></tr>'; 
+                return; 
+            }
 
-    // Update bulk action header button to be a dropdown or split buttons if needed, 
-    // or simply add two buttons in the HTML above the table. 
-    // For now, ensure the HTML header has:
-    // <button onclick="adminBulkShiftAction('accept')">Accept Selected</button>
-    // <button onclick="adminBulkShiftAction('deny')">Deny Selected</button>
+            data.forEach(log => {
+                // 1. Calculate Duration Dynamically
+                let duration = "Active";
+                if (log.ended_at) {
+                    const start = new Date(log.started_at);
+                    const end = new Date(log.ended_at);
+                    const diff = end - start;
+                    const h = Math.floor(diff / 3600000);
+                    const m = Math.floor((diff % 3600000) / 60000);
+                    duration = `${h}h ${m}m`;
+                } else if (log.duration) {
+                    // Fallback if backend provides it
+                    duration = log.duration;
+                }
 
-    data.forEach(log => {
-        const duration = log.duration || "Active/Unknown";
-        const officerName = log.username || "Unknown";
-        const proofUrl = log.screenshot;
-        const status = log.status || 'pending'; // Assuming API returns status
+                // 2. Resolve Proof URL
+                // Check for 'screenshot', 'screenshotUrl', or construct from 'r2_bucket_url'
+                let proofUrl = log.screenshot || log.screenshotUrl;
+                if (!proofUrl && log.r2_bucket_url) {
+                    proofUrl = `https://pub-a91d9d22a6264a88b02227540eadf4cb.r2.dev/${log.r2_bucket_url}`;
+                }
 
-        let statusBadge = `<span class="px-2 py-1 rounded text-xs font-bold bg-slate-100 text-slate-600">Pending</span>`;
-        if (status === 'accepted') statusBadge = `<span class="px-2 py-1 rounded text-xs font-bold bg-emerald-100 text-emerald-600">Accepted</span>`;
-        if (status === 'denied') statusBadge = `<span class="px-2 py-1 rounded text-xs font-bold bg-rose-100 text-rose-600">Denied</span>`;
+                // 3. Resolve Officer Name (Handle multiple potential keys)
+                const officerName = log.submittedByUsername || log.username || "Unknown";
 
-        const proof = proofUrl
-            ? `<div class="flex justify-center"><button onclick="openProofModal('${proofUrl}')" class="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 text-xs font-bold"><i class="ph-bold ph-eye"></i> View</button></div>` 
-            : `<div class="flex justify-center"><span class="text-xs text-slate-400">None</span></div>`;
+                const status = log.status || 'pending'; 
 
-        tbody.innerHTML += `
-        <tr class="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
-            <td class="py-3 px-4 text-center w-10">
-                <label class="relative flex items-center justify-center cursor-pointer group">
-                    <input type="checkbox" class="row-checkbox peer sr-only" value="${log.id}">
-                    <div class="w-5 h-5 bg-slate-100 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-600 rounded-lg peer-checked:bg-blue-600"></div>
-                </label>
-            </td>
-            <td class="py-3 px-6 text-sm text-slate-500 whitespace-nowrap">
-                ${new Date(log.created_at || log.timestamp).toLocaleDateString()}
-            </td>
-            <td class="py-3 px-6 text-sm font-medium text-slate-900 dark:text-white">
-                ${officerName}
-            </td>
-            <td class="py-3 px-6 text-sm font-mono">${duration}</td>
-            <td class="py-3 px-6 text-center">${statusBadge}</td>
-            <td class="py-3 px-6 text-center">${proof}</td>
-            <td class="py-3 px-6 text-right">
-                <div class="flex items-center justify-end gap-2">
-                    <button onclick="adminShiftAction('${log.id}', 'accept')" class="p-2 bg-emerald-100 text-emerald-600 rounded-lg hover:bg-emerald-200" title="Accept">
-                        <i class="ph-bold ph-check"></i>
-                    </button>
-                    <button onclick="adminShiftAction('${log.id}', 'deny')" class="p-2 bg-rose-100 text-rose-600 rounded-lg hover:bg-rose-200" title="Deny">
-                        <i class="ph-bold ph-x"></i>
-                    </button>
-                </div>
-            </td>
-        </tr>`;
-    });
-}
+                let statusBadge = `<span class="px-2 py-1 rounded text-xs font-bold bg-slate-100 text-slate-600">Pending</span>`;
+                if (status === 'accepted') statusBadge = `<span class="px-2 py-1 rounded text-xs font-bold bg-emerald-100 text-emerald-600">Accepted</span>`;
+                if (status === 'denied') statusBadge = `<span class="px-2 py-1 rounded text-xs font-bold bg-rose-100 text-rose-600">Denied</span>`;
+
+                const proof = proofUrl
+                    ? `<div class="flex justify-center"><button onclick="openProofModal('${proofUrl}')" class="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 text-xs font-bold"><i class="ph-bold ph-eye"></i> View</button></div>` 
+                    : `<div class="flex justify-center"><span class="text-xs text-slate-400">None</span></div>`;
+
+                tbody.innerHTML += `
+                <tr class="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                    <td class="py-3 px-4 text-center w-10">
+                        <label class="relative flex items-center justify-center cursor-pointer group">
+                            <input type="checkbox" class="row-checkbox peer sr-only" value="${log.id}">
+                            <div class="w-5 h-5 bg-slate-100 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-600 rounded-lg peer-checked:bg-blue-600"></div>
+                        </label>
+                    </td>
+                    <td class="py-3 px-6 text-sm text-slate-500 whitespace-nowrap">
+                        ${new Date(log.started_at || log.timestamp).toLocaleDateString()}
+                    </td>
+                    <td class="py-3 px-6 text-sm font-medium text-slate-900 dark:text-white">
+                        ${officerName}
+                    </td>
+                    <td class="py-3 px-6 text-sm font-mono">${duration}</td>
+                    <td class="py-3 px-6 text-center">${statusBadge}</td>
+                    <td class="py-3 px-6 text-center">${proof}</td>
+                    <td class="py-3 px-6 text-right">
+                        <div class="flex items-center justify-end gap-2">
+                            <button onclick="adminShiftAction('${log.id}', 'accept')" class="p-2 bg-emerald-100 text-emerald-600 rounded-lg hover:bg-emerald-200" title="Accept">
+                                <i class="ph-bold ph-check"></i>
+                            </button>
+                            <button onclick="adminShiftAction('${log.id}', 'deny')" class="p-2 bg-rose-100 text-rose-600 rounded-lg hover:bg-rose-200" title="Deny">
+                                <i class="ph-bold ph-x"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>`;
+            });
+        }
 
         function renderCitationsTable(data) {
             const tbody = document.getElementById('adminCitationsBody');
@@ -4314,6 +4337,8 @@
                 </tr>`;
             });
         }
+
+
 
         function renderArrestsTable(data) {
             const tbody = document.getElementById('adminArrestsBody');
@@ -4966,7 +4991,7 @@
                         <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-xl flex justify-between items-center shadow-sm">
                             <div>
                                 <p class="text-sm font-bold text-slate-800 dark:text-white">Arrest Record #${(a.id || '???').substring(0,6)}</p>
-                                <p class="text-xs text-slate-500">${timeString} • Officer ${a.submittedBy || 'Unknown'}</p>
+                                <p class="text-xs text-slate-500">${timeString} Â• Officer ${a.submittedBy || 'Unknown'}</p>
                                 <p class="text-xs text-slate-500 mt-1">Fines: $${fineVal} | Jail: ${jailTimeVal}s</p>
                             </div>
                             <span class="text-xs font-bold px-2 py-1 rounded ${statusClass}">${statusText}</span>
@@ -4991,7 +5016,7 @@
                         <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-xl flex justify-between items-center shadow-sm">
                             <div>
                                 <p class="text-sm font-bold text-slate-800 dark:text-white">Citation #${(c.id || '???').substring(0,6)}</p>
-                                <p class="text-xs text-slate-500">${timeString} • Officer ${c.submittedBy || 'Unknown'}</p>
+                                <p class="text-xs text-slate-500">${timeString} Â• Officer ${c.submittedBy || 'Unknown'}</p>
                                 <p class="text-xs text-slate-500 mt-1">Amount: $${c.totalAmountDue || '0.00'}</p>
                             </div>
                             <span class="text-xs font-bold px-2 py-1 rounded ${statusClass}">${statusText}</span>
@@ -6346,6 +6371,19 @@ async function loadRecentShifts() {
     } catch (err) {
         console.warn("Failed to load history", err);
         list.innerHTML = `<div class="text-center text-red-400 text-sm py-2">Failed to load.</div>`;
+    }
+}
+
+async function adminResetPassword(id) {
+    const newPass = await customPrompt("Enter temporary password for this user:", "Reset Password", "", "New Password");
+    if (!newPass) return;
+
+    if (!await customConfirm(`Reset password for user ID ${id}?`, "Confirm Reset", "Reset", true)) return;
+
+        // Use the generic apiRequest helper
+    const result = await apiRequest(`/admin/users/${id}/reset-password`, 'PUT', { newPassword: newPass });
+    if (result) {
+        customAlert(result.message, "Success");
     }
 }
     </script>
